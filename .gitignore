@@ -1,0 +1,34 @@
+# Dataset — too large to commit
+data/
+
+# Saved model weights
+models/
+
+# Experiment results
+results/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.log
+*.tmp
