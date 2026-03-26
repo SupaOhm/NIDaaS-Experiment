@@ -139,7 +139,7 @@ def extract_behavioral_features(df):
     ]
     # Ensure columns exist
     cols = [c for c in features if c in df.columns]
-    return df[cols].values, df["Label"].values
+    return df[cols].values, df["label"].values
 
 
 def align_labels_to_sequences(y: np.ndarray, window_size: int = 10) -> np.ndarray:

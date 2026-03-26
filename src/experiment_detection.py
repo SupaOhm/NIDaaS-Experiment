@@ -56,6 +56,8 @@ def run_detection_experiment(data_path: str, smoke: bool = False):
         df = _make_synthetic_df(n=1000)
     else:
         df = load_dataset(data_path)
+        df = clean(df)  # Remove inherent NaN/Inf rows from CIC-IDS2017
+
 
     # 2. Behavioral Feature Engineering (Section III-B-3-2)
     X, y = extract_behavioral_features(df)
