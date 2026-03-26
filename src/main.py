@@ -1,117 +1,53 @@
 """
 main.py
 -------
-Entry point for the NIDaaS research experiment repo.
-
-Usage
------
-  # Run detection comparison experiment (with real data):
-  python src/main.py --experiment detection --data data/
-
-  # Run detection comparison (smoke test — no real data needed):
-  python src/main.py --experiment detection --smoke
-
-  # Run efficiency / dedup comparison experiment:
-  python src/main.py --experiment efficiency --data data/
-
-  # Run efficiency experiment (smoke test):
-  python src/main.py --experiment efficiency --smoke
-
-  # Run both experiments in sequence:
-  python src/main.py --experiment all --smoke
+Experiment CLI Router targeting the 3 academic verification domains:
+1=Detection Precision, 2=Deduplication Efficiency, 3=Pipeline Scalability.
 """
-
 import sys
 import os
-import argparse
-
-# --- OPENMP CONFLICT FIX ---
-# XGBoost (via libomp) and PyTorch can sometimes conflict on macOS, 
-# leading to deadlocks or "Error #15". This flag resolves it.
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1"     # Prevents thread-pool deadlock
-# ---------------------------
-
-# Ensure src/ is on the path regardless of where the script is invoked from
 sys.path.insert(0, os.path.dirname(__file__))
 
-from experiment_detection import run_detection_experiment
-from experiment_efficiency import run_efficiency_experiment
-from experiment_parallel_dedupe import run_parallel_experiment
-
+import argparse
+from experiments.exp_detection import run_detection_experiment
+from experiments.exp_dedupe_efficiency import run_efficiency_experiment
+from experiments.exp_scaling import run_scaling_experiment
+from experiments.exp_dedupe_search import run_dedupe_grid_search
 
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "NIDaaS Research Experiment Runner\n"
-            "-----------------------------------\n"
-            "Experiment 1 (detection):  compare Hybrid vs RF / XGBoost / LR\n"
-            "Experiment 2 (efficiency): compare Bloom+Exact dedup vs baselines\n"
-            "Experiment 3 (parallel):   compare Centralized vs Partitioned Multi-worker architecture\n"
-        ),
+        description="NIDSaaS Research Evaluation Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Available Experiments:\n"
+            "  1 / detection   : Evaluates Snort, LSTM, and Hybrid Precision & F1\n"
+            "  2 / efficiency  : Benchmarks fair Sliding-Window deduplication topologies\n"
+            "  3 / scaling     : Evaluates Sensitivity to Window Size and Parallel CPU counts\n"
+            "  4 / search      : Systematic Grid Search across Parameterized 2-Stage Architectures\n"
+        )
     )
     parser.add_argument(
-        "--experiment",
-        choices=["detection", "1", "d", "efficiency", "2", "e", "parallel", "3", "p", "all"],
+        "--experiment", "-e",
+        choices=["1", "detection", "2", "efficiency", "3", "scaling", "4", "search", "all"],
         default="all",
-        help="Which experiment to run (default: all)",
+        help="Target experiment variant (default: all)"
     )
-    parser.add_argument(
-        "--data",
-        default="data/",
-        help="Path to CIC-IDS2017 CSV file or directory (default: data/)",
-    )
-    parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Run with synthetic data — no real dataset required. Good for testing setup.",
-    )
-    parser.add_argument(
-        "--n-records",
-        type=int,
-        default=10_000,
-        help="Number of records to use in the efficiency experiment (default: 10000)",
-    )
-    parser.add_argument(
-        "--dup-rate",
-        type=float,
-        default=0.3,
-        help="Fraction of duplicate records to inject in the efficiency experiment (default: 0.3)",
-    )
-    parser.add_argument(
-        "--partitions",
-        type=int,
-        default=4,
-        help="Number of multi-processing partitions for Experiment 3 (default: 4)",
-    )
-
+    parser.add_argument("--data", "-d", default="data/", help="Path to CIC-IDS2017 .csv files")
+    parser.add_argument("--records", "-n", type=int, default=None, help="Limit number of records to process (default: all)")
+    
     args = parser.parse_args()
-
-    if args.experiment in ("detection", "1", "d", "all"):
-        run_detection_experiment(data_path=args.data, smoke=args.smoke)
-
-    if args.experiment in ("efficiency", "2", "e", "all"):
-        run_efficiency_experiment(
-            data_path=args.data,
-            smoke=args.smoke,
-            n_records=args.n_records,
-            dup_rate=args.dup_rate,
-        )
-
-    if args.experiment in ("parallel", "3", "p", "all"):
-        # Smoke testing for parallel uses small n_records
-        n_rec = 1000 if args.smoke else args.n_records
-        run_parallel_experiment(
-            data_path=args.data,
-            n_records=n_rec,
-            dup_rate=args.dup_rate,
-            num_partitions=args.partitions
-        )
-
-    print("\n✓ All requested experiments finished.")
-    print("  Check results/tables/ for CSVs and results/figures/ for plots.")
-
-
+    
+    if args.experiment in ("1", "detection", "all"):
+        run_detection_experiment(args.data, args.records)
+        
+    if args.experiment in ("2", "efficiency", "all"):
+        run_efficiency_experiment(args.data, args.records)
+        
+    if args.experiment in ("3", "scaling", "all"):
+        run_scaling_experiment(args.data, args.records)
+        
+    if args.experiment in ("4", "search", "all"):
+        run_dedupe_grid_search(args.data, args.records)
+        
 if __name__ == "__main__":
     main()
