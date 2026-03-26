@@ -1,158 +1,192 @@
 """
 feature_engineering.py
 -----------------------
-Applies paper-inspired feature engineering before feeding data to models.
-
-The paper's LSTM is NOT just raw CIC-IDS2017 columns — it uses engineered
-features that capture behavioural patterns (ratios, rates, aggregations).
-
-This module:
-  1. Derives ratio and rate features from raw flow columns.
-  2. Bins duration into categorical buckets encoded as integers.
-  3. (Optionally) reshapes feature arrays into time-window sequences for the LSTM.
-
-CIC-IDS2017 already contains many flow-level features, so we add a focused set
-of derived features on top to represent the "feature engineering" contribution
-described in the paper.
+Feature engineering and sequence builders for NIDaaS experiments.
 """
 
 import numpy as np
 import pandas as pd
-from typing import Optional
 
 
-# CIC-IDS2017 candidate column names (stripped of whitespace)
-_COL_FWD_PKTS    = "Total Fwd Packets"
-_COL_BWD_PKTS    = "Total Backward Packets"
-_COL_FWD_BYTES   = "Total Length of Fwd Packets"
-_COL_BWD_BYTES   = "Total Length of Bwd Packets"
-_COL_DURATION    = "Flow Duration"
-_COL_FLOW_PKTS   = "Flow Packets/s"
-_COL_FLOW_BYTES  = "Flow Bytes/s"
+# CIC-IDS2017 candidate column names
+_COL_FWD_PKTS = "Total Fwd Packets"
+_COL_BWD_PKTS = "Total Backward Packets"
+_COL_FWD_BYTES = "Total Length of Fwd Packets"
+_COL_BWD_BYTES = "Total Length of Bwd Packets"
+_COL_DURATION = "Flow Duration"
+_COL_FLOW_PKTS = "Flow Packets/s"
+_COL_FLOW_BYTES = "Flow Bytes/s"
+_COL_FWD_PKT_MEAN = "Fwd Packet Length Mean"
+_COL_BWD_PKT_MEAN = "Bwd Packet Length Mean"
+_COL_PKT_VAR = "Packet Length Variance"
+_COL_RST = "RST Flag Count"
 
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add derived features to the DataFrame.
-
-    New columns added (when source columns are present):
-      - bytes_ratio      : fwd_bytes / (fwd_bytes + bwd_bytes + 1)
-      - packet_ratio     : fwd_pkts  / (fwd_pkts  + bwd_pkts  + 1)
-      - bytes_per_packet : total bytes / total packets
-      - duration_bucket  : fast / medium / long (0 / 1 / 2)
-      - log_flow_pkts    : log1p of flow packets/s
-      - log_flow_bytes   : log1p of flow bytes/s
-
-    Parameters
-    ----------
-    df : pd.DataFrame — cleaned DataFrame (output of preprocess.clean)
-
-    Returns
-    -------
-    pd.DataFrame with additional engineered columns
     """
     df = df.copy()
 
-    fwd_pkts   = df.get(_COL_FWD_PKTS,   pd.Series(np.zeros(len(df))))
-    bwd_pkts   = df.get(_COL_BWD_PKTS,   pd.Series(np.zeros(len(df))))
-    fwd_bytes  = df.get(_COL_FWD_BYTES,  pd.Series(np.zeros(len(df))))
-    bwd_bytes  = df.get(_COL_BWD_BYTES,  pd.Series(np.zeros(len(df))))
-    duration   = df.get(_COL_DURATION,   pd.Series(np.ones(len(df))))
-    flow_pkts  = df.get(_COL_FLOW_PKTS,  pd.Series(np.zeros(len(df))))
-    flow_bytes = df.get(_COL_FLOW_BYTES, pd.Series(np.zeros(len(df))))
+    if "Label" in df.columns and "label" not in df.columns:
+        df = df.rename(columns={"Label": "label"})
 
-    # --- Ratios ---
-    total_bytes = fwd_bytes + bwd_bytes + 1
-    total_pkts  = fwd_pkts  + bwd_pkts  + 1
+    fwd_pkts = df.get(_COL_FWD_PKTS, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    bwd_pkts = df.get(_COL_BWD_PKTS, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    fwd_bytes = df.get(_COL_FWD_BYTES, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    bwd_bytes = df.get(_COL_BWD_BYTES, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    duration = df.get(_COL_DURATION, pd.Series(np.ones(len(df)), index=df.index)).astype(float)
+    flow_pkts = df.get(_COL_FLOW_PKTS, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    flow_bytes = df.get(_COL_FLOW_BYTES, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    fwd_pkt_mean = df.get(_COL_FWD_PKT_MEAN, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    bwd_pkt_mean = df.get(_COL_BWD_PKT_MEAN, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
+    pkt_var = df.get(_COL_PKT_VAR, pd.Series(np.zeros(len(df)), index=df.index)).astype(float)
 
-    df["bytes_ratio"]      = fwd_bytes / total_bytes
-    df["packet_ratio"]     = fwd_pkts  / total_pkts
-    df["bytes_per_packet"] = total_bytes / total_pkts
+    total_bytes = fwd_bytes + bwd_bytes
+    total_pkts = fwd_pkts + bwd_pkts
 
-    # --- Duration bucket: fast (<1s=0), medium (1-10s=1), long (>10s=2) ---
-    # CIC-IDS2017 duration is in microseconds
-    dur_sec = duration / 1e6
-    df["duration_bucket"] = pd.cut(
-        dur_sec,
-        bins=[-np.inf, 1.0, 10.0, np.inf],
-        labels=[0, 1, 2],
-    ).astype(float).fillna(0)
+    safe_total_bytes = total_bytes + 1.0
+    safe_total_pkts = total_pkts + 1.0
+    safe_duration_sec = (duration / 1e6).clip(lower=1e-6)
 
-    # --- Log-scale rate features (stabilise large value ranges) ---
-    df["log_flow_pkts"]  = np.log1p(flow_pkts.clip(lower=0))
+    # Basic ratios
+    df["bytes_ratio"] = fwd_bytes / safe_total_bytes
+    df["packet_ratio"] = fwd_pkts / safe_total_pkts
+    df["bytes_per_packet"] = safe_total_bytes / safe_total_pkts
+
+    # Volume features
+    df["total_bytes"] = total_bytes
+    df["total_pkts"] = total_pkts
+    df["fwd_bwd_byte_diff"] = fwd_bytes - bwd_bytes
+    df["fwd_bwd_pkt_diff"] = fwd_pkts - bwd_pkts
+
+    # Rate-like features
+    df["pkt_rate_calc"] = total_pkts / safe_duration_sec
+    df["byte_rate_calc"] = total_bytes / safe_duration_sec
+
+    # Packet statistics
+    df["mean_pkt_len_bidir"] = (fwd_pkt_mean + bwd_pkt_mean) / 2.0
+    df["pkt_len_var_log"] = np.log1p(pkt_var.clip(lower=0))
+
+    # Logs / buckets
+    df["duration_sec"] = safe_duration_sec
+    df["log_duration"] = np.log1p(safe_duration_sec)
+    df["log_flow_pkts"] = np.log1p(flow_pkts.clip(lower=0))
     df["log_flow_bytes"] = np.log1p(flow_bytes.clip(lower=0))
+
+    df["duration_bucket"] = pd.cut(
+        safe_duration_sec,
+        bins=[-np.inf, 0.1, 1.0, 10.0, np.inf],
+        labels=[0, 1, 2, 3],
+    ).astype(float).fillna(0.0)
+
+    # Interaction-like features
+    df["burst_indicator"] = (df["log_flow_pkts"] * df["log_flow_bytes"]).astype(float)
+    df["directional_intensity"] = (
+        np.abs(df["fwd_bwd_byte_diff"]) / (safe_total_bytes)
+    ).astype(float)
 
     return df
 
 
-def make_sequences(
-    X: np.ndarray,
-    window_size: int = 10,
-) -> np.ndarray:
+def extract_behavioral_features(df: pd.DataFrame):
     """
-    Reshape a 2-D feature array into 3-D time-window sequences for the LSTM.
-
-    Parameters
-    ----------
-    X           : (N, F) array of scaled features
-    window_size : number of consecutive time steps per sequence
-
-    Returns
-    -------
-    (N - window_size + 1, window_size, F) array
+    Build final tabular feature matrix for classical models and sequence models.
     """
-    n_samples, n_features = X.shape
-    sequences = np.stack(
-        [X[i: i + window_size] for i in range(n_samples - window_size + 1)],
-        axis=0,
-    )
-    return sequences
+    df = df.copy()
+
+    if "Label" in df.columns and "label" not in df.columns:
+        df = df.rename(columns={"Label": "label"})
+
+    if "label" not in df.columns:
+        raise KeyError(f"'label' column not found. Available columns: {list(df.columns)}")
+
+    raw_features = [
+        _COL_FWD_PKTS,
+        _COL_BWD_PKTS,
+        _COL_FWD_BYTES,
+        _COL_BWD_BYTES,
+        _COL_DURATION,
+        _COL_FLOW_PKTS,
+        _COL_FLOW_BYTES,
+        _COL_RST,
+        _COL_PKT_VAR,
+        _COL_FWD_PKT_MEAN,
+        _COL_BWD_PKT_MEAN,
+    ]
+
+    engineered_features = [
+        "bytes_ratio",
+        "packet_ratio",
+        "bytes_per_packet",
+        "total_bytes",
+        "total_pkts",
+        "fwd_bwd_byte_diff",
+        "fwd_bwd_pkt_diff",
+        "pkt_rate_calc",
+        "byte_rate_calc",
+        "mean_pkt_len_bidir",
+        "pkt_len_var_log",
+        "duration_sec",
+        "log_duration",
+        "duration_bucket",
+        "log_flow_pkts",
+        "log_flow_bytes",
+        "burst_indicator",
+        "directional_intensity",
+    ]
+
+    selected = [c for c in raw_features + engineered_features if c in df.columns]
+    if not selected:
+        raise ValueError("No usable behavioral feature columns found.")
+
+    X = df[selected].astype(float).values
+    y = df["label"].astype(int).values
+    return X, y
 
 
-def make_forecasting_data(X_data, window_size=10):
+def make_forecasting_data(X_data: np.ndarray, window_size: int = 10):
     """
-    Transforms [N, features] into (X, y_next) forecasting pairs.
-    X: [N - window_size, window_size, features] - Behavioral sequence (St)
-    y_next: [N - window_size, features] - Actual future vector (vt+1)
+    Kept for backward compatibility.
     """
     X, y_next = [], []
     for i in range(len(X_data) - window_size):
-        X.append(X_data[i : i + window_size])
+        X.append(X_data[i:i + window_size])
         y_next.append(X_data[i + window_size])
+
+    if len(X) == 0:
+        n_features = X_data.shape[1] if X_data.ndim == 2 and X_data.size > 0 else 0
+        return (
+            np.empty((0, window_size, n_features), dtype=float),
+            np.empty((0, n_features), dtype=float),
+        )
+
     return np.array(X), np.array(y_next)
 
-def extract_behavioral_features(df):
-    """
-    Maps CIC-IDS2017 fields to NIDSaaS Section III-B-3-2 features:
-      - Volumetric (counts, bytes)
-      - Fdeny (Deny frequency proxy: RST flag count)
-      - Diversity (Unique Dst IP proxy: Packet Length Variance)
-    """
-    # Paper Section III-B-3-2 Features
-    features = [
-        "Total Fwd Packets", "Total Backward Packets",
-        "Total Length of Fwd Packets", "Total Length of Bwd Packets",
-        "Flow Duration", "Flow Packets/s", "Flow Bytes/s",
-        "RST Flag Count",   # Proxy for Fdeny (Deny actions)
-        "Packet Length Variance",  # Proxy for Diversity (Unique hosts/ports)
-        "Fwd Packet Length Mean", "Bwd Packet Length Mean"
-    ]
-    # Ensure columns exist
-    cols = [c for c in features if c in df.columns]
-    return df[cols].values, df["label"].values
 
-
-def align_labels_to_sequences(y: np.ndarray, window_size: int = 10) -> np.ndarray:
+def make_sequence_classification_data(X_data: np.ndarray, y_data: np.ndarray, window_size: int = 10):
     """
-    Align labels to sequence windows by taking the label of the last step.
+    Build supervised sequences.
 
-    Parameters
-    ----------
-    y           : (N,) label array
-    window_size : must match the value used in make_sequences
-
-    Returns
-    -------
-    (N - window_size + 1,) label array
+    Sequence ending at index t predicts the label at index t.
+    X_seq[k] shape = [window_size, n_features]
+    y_seq[k] = y[t]
     """
-    return y[window_size - 1:]
+    if len(X_data) != len(y_data):
+        raise ValueError("X_data and y_data must have the same length.")
+
+    X_seq, y_seq = [], []
+
+    for end_idx in range(window_size - 1, len(X_data)):
+        start_idx = end_idx - window_size + 1
+        X_seq.append(X_data[start_idx:end_idx + 1])
+        y_seq.append(y_data[end_idx])
+
+    if len(X_seq) == 0:
+        n_features = X_data.shape[1] if X_data.ndim == 2 and X_data.size > 0 else 0
+        return (
+            np.empty((0, window_size, n_features), dtype=float),
+            np.empty((0,), dtype=int),
+        )
+
+    return np.array(X_seq), np.array(y_seq)
