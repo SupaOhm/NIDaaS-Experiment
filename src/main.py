@@ -3,9 +3,14 @@ main.py
 -------
 Central entry point for running NIDaaS experiments.
 
-Supported experiments:
+Primary proposed model:
+- two_stage
+- two_stage_best
+
+Baselines:
 - rf_novelty
 - rf_novelty_best
+- supervised_rf
 """
 
 import argparse
@@ -17,63 +22,94 @@ if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
 from exp_rf_novelty import run_rf_novelty_experiment
-from best_config import get_best_experiment_config
+from exp_supervised_rf import run_supervised_rf_experiment
+from exp_two_stage_lr_rf import run_two_stage_lr_rf_experiment
 
 
 def main():
     parser = argparse.ArgumentParser(description="NIDaaS experiment runner")
     subparsers = parser.add_subparsers(dest="experiment", required=True)
 
-    # Manual config
-    rf_parser = subparsers.add_parser(
-        "rf_novelty",
-        help="Run Random-Forest novelty experiment with manual parameters",
+    # Proposed two-stage model
+    two_stage_parser = subparsers.add_parser(
+        "two_stage",
+        help="Run the proposed two-stage LR -> RF detection model",
     )
-    rf_parser.add_argument("--input-dir", type=str, required=True, help="Directory or CSV path for CIC-IDS2017.")
-    rf_parser.add_argument("--max-rows-per-file", type=int, default=None, help="Optional row cap per CSV after loading.")
-    rf_parser.add_argument("--max-files", type=int, default=None, help="Optional cap on number of source CSV files.")
-    rf_parser.add_argument("--use-signature", action="store_true", help="Run signature-first hybrid experiment.")
+    two_stage_parser.add_argument("--input-dir", type=str, required=True)
+    two_stage_parser.add_argument("--max-rows-per-file", type=int, default=None)
+    two_stage_parser.add_argument("--max-files", type=int, default=8)
+    two_stage_parser.add_argument("--lr-c", type=float, default=1.0)
+    two_stage_parser.add_argument("--lr-max-iter", type=int, default=1000)
+    two_stage_parser.add_argument("--rf-n-estimators", type=int, default=200)
+    two_stage_parser.add_argument("--rf-max-depth", type=int, default=12)
+    two_stage_parser.add_argument("--rf-min-samples-leaf", type=int, default=5)
+    two_stage_parser.add_argument("--screen-thresholds", nargs="*", type=float, default=[0.2])
+    two_stage_parser.add_argument("--confirm-thresholds", nargs="*", type=float, default=[0.8, 0.95])
+    two_stage_parser.add_argument("--random-state", type=int, default=42)
+    two_stage_parser.add_argument("--result-dir", type=str, default="result_two_stage_lr_rf")
+
+    two_stage_best_parser = subparsers.add_parser(
+        "two_stage_best",
+        help="Run the saved best two-stage configuration",
+    )
+    two_stage_best_parser.add_argument("--input-dir", type=str, required=True)
+    two_stage_best_parser.add_argument("--max-rows-per-file", type=int, default=None)
+    two_stage_best_parser.add_argument("--max-files", type=int, default=8)
+    two_stage_best_parser.add_argument("--random-state", type=int, default=42)
+    two_stage_best_parser.add_argument("--result-dir", type=str, default="result_two_stage_best")
+
+    # Baselines kept for comparison
+    rf_parser = subparsers.add_parser("rf_novelty", help="Run RF novelty baseline")
+    rf_parser.add_argument("--input-dir", type=str, required=True)
+    rf_parser.add_argument("--max-rows-per-file", type=int, default=None)
+    rf_parser.add_argument("--max-files", type=int, default=None)
+    rf_parser.add_argument("--use-signature", action="store_true")
     rf_parser.add_argument("--n-estimators", type=int, default=100)
     rf_parser.add_argument("--max-depth", type=int, default=10)
     rf_parser.add_argument("--min-samples-leaf", type=int, default=5)
     rf_parser.add_argument("--alpha", type=float, default=0.7)
     rf_parser.add_argument("--quantiles", nargs="*", type=float, default=[0.95])
     rf_parser.add_argument("--random-state", type=int, default=42)
-    rf_parser.add_argument("--result-dir", type=str, default="result", help="Directory to store experiment outputs.")
+    rf_parser.add_argument("--result-dir", type=str, default="result")
 
-    # Saved best config
-    best_parser = subparsers.add_parser(
-        "rf_novelty_best",
-        help="Run Random-Forest novelty experiment using saved best config",
-    )
-    best_parser.add_argument("--input-dir", type=str, required=True, help="Directory or CSV path for CIC-IDS2017.")
-    best_parser.add_argument("--max-rows-per-file", type=int, default=None, help="Optional row cap per CSV after loading.")
-    best_parser.add_argument("--max-files", type=int, default=8, help="Optional cap on number of source CSV files.")
-    best_parser.add_argument("--random-state", type=int, default=42)
-    best_parser.add_argument("--result-dir", type=str, default="result_best", help="Directory to store experiment outputs.")
+    supervised_rf_parser = subparsers.add_parser("supervised_rf", help="Run supervised RF baseline")
+    supervised_rf_parser.add_argument("--input-dir", type=str, required=True)
+    supervised_rf_parser.add_argument("--max-rows-per-file", type=int, default=None)
+    supervised_rf_parser.add_argument("--max-files", type=int, default=None)
+    supervised_rf_parser.add_argument("--n-estimators", type=int, default=200)
+    supervised_rf_parser.add_argument("--max-depth", type=int, default=12)
+    supervised_rf_parser.add_argument("--min-samples-leaf", type=int, default=5)
+    supervised_rf_parser.add_argument("--thresholds", nargs="*", type=float, default=[0.8, 0.9, 0.95])
+    supervised_rf_parser.add_argument("--random-state", type=int, default=42)
+    supervised_rf_parser.add_argument("--result-dir", type=str, default="result_supervised_rf")
 
     args = parser.parse_args()
 
-    if args.experiment == "rf_novelty":
+    if args.experiment == "two_stage":
+        run_two_stage_lr_rf_experiment(args)
+
+    elif args.experiment == "two_stage_best":
+        args.lr_c = 1.0
+        args.lr_max_iter = 1000
+        args.rf_n_estimators = 200
+        args.rf_max_depth = 12
+        args.rf_min_samples_leaf = 5
+        args.screen_thresholds = [0.2]
+        args.confirm_thresholds = [0.8, 0.95]
+
+        print("\nUsing saved best two-stage config:")
+        print({
+            "stage1": {"model": "logistic_regression", "threshold": 0.2},
+            "stage2": {"model": "random_forest", "thresholds": [0.8, 0.95]},
+        })
+
+        run_two_stage_lr_rf_experiment(args)
+
+    elif args.experiment == "rf_novelty":
         run_rf_novelty_experiment(args)
 
-    elif args.experiment == "rf_novelty_best":
-        best_cfg = get_best_experiment_config()
-        rf_cfg = best_cfg["rf_config"]
-
-        args.use_signature = best_cfg.get("use_signature", True)
-        args.n_estimators = rf_cfg["n_estimators"]
-        args.max_depth = rf_cfg["max_depth"]
-        args.min_samples_leaf = rf_cfg["min_samples_leaf"]
-        args.alpha = rf_cfg["alpha"]
-        args.quantiles = rf_cfg["quantiles"]
-        args.random_state = args.random_state if args.random_state is not None else rf_cfg.get("random_state", 42)
-
-        print("\nUsing saved best config:")
-        print(best_cfg["rf_config"])
-        print(best_cfg["signature_config"])
-
-        run_rf_novelty_experiment(args)
+    elif args.experiment == "supervised_rf":
+        run_supervised_rf_experiment(args)
 
     else:
         raise ValueError(f"Unsupported experiment: {args.experiment}")

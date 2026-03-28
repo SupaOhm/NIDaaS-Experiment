@@ -1,0 +1,6 @@
+rule_name,hit_count
+rule_high_rate,8533
+rule_syn_flood,0
+rule_udp_flood,0
+rule_icmp_flood,0
+rule_scan_like,0

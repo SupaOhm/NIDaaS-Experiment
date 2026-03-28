@@ -19,7 +19,7 @@ def get_best_experiment_config() -> dict:
         "experiment_name": "rf_novelty_hybrid_current_best",
         "best_result": {
             "model": "hybrid_signature_rf_novelty",
-            "quantile": 0.95,
+            "quantile": 0.90,
             "f1": 0.4476864738964949,
             "precision": 0.8995377108124304,
             "recall": 0.29799775006853785,
@@ -34,7 +34,7 @@ def get_best_experiment_config() -> dict:
             "max_depth": 10,
             "min_samples_leaf": 5,
             "alpha": 0.7,
-            "quantiles": [0.95],
+            "quantiles": [0.90],
             "random_state": 42,
         },
         "signature_config": {
