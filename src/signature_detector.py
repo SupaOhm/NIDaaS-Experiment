@@ -1,95 +1,194 @@
 """
-signature_detector.py (Snort-Proxy Engine)
-------------------------------------------
-Advanced rule-based signature detector using flow-based signatures
-equivalent to the official Snort 3 Core Rule Set for CIC-IDS2017.
+signature_detector.py
+---------------------
+Implements rule-based signature detection for CIC-IDS2017-style flow features.
 
-In the NIDaaS paper, the Signature Module is the "First Pass."
-Its job is to catch known attack patterns instantly before they ever
-reach the more resource-heavy LSTM or ML models.
+This version can automatically load the current best signature settings
+from best_config.py. If best_config.py is unavailable, it falls back to
+safe defaults.
 
-Rules mapped for CIC-IDS2017 Attack Types:
-  - DoS / DDoS (Hulk, GoldenEye, LOIC, Slowloris)
-  - Brute Force (FTP-Patator, SSH-Patator)
-  - PortScans
-  - Web Attacks (XSS, SQL Injection, Brute Force)
-  - Heartbleed
-  - Botnets (Ares)
-  - Infiltration
+You can still override any value manually, for example:
+    SignatureConfig(high_flow_packets_s_thr=900_000.0)
 """
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
+from dataclasses import dataclass
 from typing import Tuple
 
-class SignatureDetector:
-    """
-    Snort-style signature detector for flow records.
-    """
+import numpy as np
+import pandas as pd
 
-    def predict_row(self, row: dict) -> Tuple[str, float]:
-        """
-        Apply advanced Snort-equivalent rules to a single flow.
-        """
-        dest_port = int(row.get("Destination Port", 0))
-        src_port  = int(row.get("Source Port", 0))
-        protocol  = int(row.get("Protocol", 0))
-        duration  = float(row.get("Flow Duration", 0))
-        
-        # Byte and packet stats (stripped of whitespace in loader)
-        f_pkts    = float(row.get("Total Fwd Packets", 0))
-        b_pkts    = float(row.get("Total Backward Packets", 0))
-        f_bytes   = float(row.get("Total Length of Fwd Packets", 0))
-        b_bytes   = float(row.get("Total Length of Bwd Packets", 0))
-        
-        # Rate stats
-        pkt_rate  = float(row.get("Flow Packets/s", 0))
-        byte_rate = float(row.get("Flow Bytes/s", 0))
-        
-        # 1. SSH-Patator / FTP-Patator (Brute Force)
-        # Refined: Higher threshold (100 pkts) to avoid flagging small legitimate sessions
-        if (dest_port == 22 or dest_port == 21) and duration > 5_000_000:
-             if f_pkts > 100 and (f_bytes / max(f_pkts, 1)) < 200:
-                 return "ATTACK", 1.0
+# Try loading saved best config
+try:
+    from best_config import get_best_experiment_config
 
-        # 2. DoS / DDoS (Flood)
-        # Refined: Higher packet rate threshold (100k) — only true floods
-        if pkt_rate > 100_000 or (f_pkts > 50_000 and duration < 1_000_000):
-            return "ATTACK", 1.0
+    _BEST_SIGNATURE_CFG = get_best_experiment_config().get("signature_config", {})
+except Exception:
+    _BEST_SIGNATURE_CFG = {}
 
-        # 3. Slowloris / SlowHTTPTest
-        # Refined: Extremely slow headers on port 80/443
-        if duration > 10_000_000 and (f_bytes + b_bytes) < 500 and protocol == 6:
-            return "ATTACK", 1.0
 
-        # 4. PortScan (Probe)
-        # Refined: Only flag if duration is near-zero AND absolutely zero backward packets
-        if duration < 5_000 and b_pkts == 0 and f_pkts <= 2:
-            return "ATTACK", 1.0
-        
-        # 5. Heartbleed
-        # Refined: Enforced specific port 443 + high-port source combo
-        if (dest_port == 443 or src_port == 443) and b_bytes > 32_000 and b_pkts < 15:
-            return "ATTACK", 1.0
+def _best(name: str, default):
+    return _BEST_SIGNATURE_CFG.get(name, default)
 
-        # 6. Botnet / C&C Communication
-        # Signatures: Periodic small packets over unusual high-ports
-        if dest_port > 10000 and f_pkts < 10 and b_pkts < 10 and duration > 5_000_000:
-            if pkt_rate < 2:  # Heartbeat pattern
-                return "ATTACK", 1.0
 
-        # 7. Web Attack (SQLi / XSS)
-        # Signatures: specific payload sizes on port 80/443
-        if (dest_port == 80 or dest_port == 443) and f_bytes > 2_000 and b_pkts > 0:
-            # Substitute for payload inspection on Flow data: high forward byte density
-            if (f_bytes / max(f_pkts, 1)) > 800:
-                return "ATTACK", 1.0
+@dataclass
+class SignatureConfig:
+    # Auto-load from best_config.py if available
+    enable_high_rate_rule: bool = _best("enable_high_rate_rule", True)
+    enable_syn_flood_rule: bool = _best("enable_syn_flood_rule", False)
+    enable_udp_flood_rule: bool = _best("enable_udp_flood_rule", False)
+    enable_icmp_flood_rule: bool = _best("enable_icmp_flood_rule", False)
+    enable_scan_like_rule: bool = _best("enable_scan_like_rule", False)
 
-        return "UNKNOWN", 0.0
+    high_flow_packets_s_thr: float = _best("high_flow_packets_s_thr", 1_000_000.0)
+    high_flow_bytes_s_thr: float = _best("high_flow_bytes_s_thr", 0.0)
 
-    def predict(self, df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
-        """Apply rules across a DataFrame."""
-        results = [self.predict_row(row) for row in df.to_dict(orient="records")]
-        return (np.array([r[0] for r in results]), 
-                np.array([r[1] for r in results]))
+    syn_count_thr: float = _best("syn_count_thr", 20.0)
+    ack_count_max: float = _best("ack_count_max", 0.0)
+    syn_flood_packets_s_thr: float = _best("syn_flood_packets_s_thr", 5_000.0)
+    syn_flood_total_fwd_pkts_thr: float = _best("syn_flood_total_fwd_pkts_thr", 40.0)
 
+    udp_packets_s_thr: float = _best("udp_packets_s_thr", 20_000.0)
+    udp_total_fwd_pkts_thr: float = _best("udp_total_fwd_pkts_thr", 80.0)
+    udp_total_fwd_bytes_thr: float = _best("udp_total_fwd_bytes_thr", 8_000.0)
+
+    icmp_packets_s_thr: float = _best("icmp_packets_s_thr", 10_000.0)
+    icmp_total_fwd_pkts_thr: float = _best("icmp_total_fwd_pkts_thr", 40.0)
+
+    scan_duration_max: float = _best("scan_duration_max", 50_000.0)
+    scan_total_pkts_max: float = _best("scan_total_pkts_max", 3.0)
+    scan_total_bytes_max: float = _best("scan_total_bytes_max", 300.0)
+
+
+def _num(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
+    """Safely get a numeric column; return default if missing."""
+    if col not in df.columns:
+        return pd.Series(default, index=df.index, dtype=float)
+    return pd.to_numeric(df[col], errors="coerce").fillna(default)
+
+
+def _protocol_mask(df: pd.DataFrame, protocol_name: str) -> pd.Series:
+    if "Protocol" not in df.columns:
+        return pd.Series(False, index=df.index)
+
+    s = df["Protocol"]
+    s_num = pd.to_numeric(s, errors="coerce")
+
+    if protocol_name.upper() == "ICMP":
+        return s_num.eq(1) | s.astype(str).str.upper().eq("ICMP")
+    if protocol_name.upper() == "TCP":
+        return s_num.eq(6) | s.astype(str).str.upper().eq("TCP")
+    if protocol_name.upper() == "UDP":
+        return s_num.eq(17) | s.astype(str).str.upper().eq("UDP")
+
+    return pd.Series(False, index=df.index)
+
+
+def detect(
+    df_features: pd.DataFrame,
+    config: SignatureConfig | None = None,
+    return_details: bool = False,
+) -> np.ndarray | Tuple[np.ndarray, pd.DataFrame]:
+    cfg = config or SignatureConfig()
+
+    flow_packets_s = _num(df_features, "Flow Packets/s")
+    flow_bytes_s = _num(df_features, "Flow Bytes/s")
+
+    syn = _num(df_features, "SYN Flag Count")
+    ack = _num(df_features, "ACK Flag Count")
+    flow_duration = _num(df_features, "Flow Duration")
+
+    total_fwd_pkts = _num(df_features, "Total Fwd Packets")
+    total_bwd_pkts = _num(df_features, "Total Backward Packets")
+    total_len_fwd = _num(df_features, "Total Length of Fwd Packets")
+    total_len_bwd = _num(df_features, "Total Length of Bwd Packets")
+
+    total_pkts = total_fwd_pkts + total_bwd_pkts
+    total_bytes = total_len_fwd + total_len_bwd
+
+    is_tcp = _protocol_mask(df_features, "TCP")
+    is_udp = _protocol_mask(df_features, "UDP")
+    is_icmp = _protocol_mask(df_features, "ICMP")
+
+    # Current best round: packets/s only
+    rule_high_rate = pd.Series(False, index=df_features.index)
+    if cfg.enable_high_rate_rule:
+        rule_high_rate = (
+            is_tcp
+            & (flow_packets_s >= cfg.high_flow_packets_s_thr)
+        )
+
+    rule_syn_flood = pd.Series(False, index=df_features.index)
+    if cfg.enable_syn_flood_rule:
+        rule_syn_flood = (
+            is_tcp
+            & (syn >= cfg.syn_count_thr)
+            & (ack <= cfg.ack_count_max)
+            & (
+                (flow_packets_s >= cfg.syn_flood_packets_s_thr)
+                | (total_fwd_pkts >= cfg.syn_flood_total_fwd_pkts_thr)
+            )
+        )
+
+    rule_udp_flood = pd.Series(False, index=df_features.index)
+    if cfg.enable_udp_flood_rule:
+        rule_udp_flood = (
+            is_udp
+            & (
+                (
+                    (flow_packets_s >= cfg.udp_packets_s_thr)
+                    & (total_fwd_pkts >= cfg.udp_total_fwd_pkts_thr)
+                )
+                | (
+                    (flow_packets_s >= cfg.udp_packets_s_thr)
+                    & (total_len_fwd >= cfg.udp_total_fwd_bytes_thr)
+                )
+            )
+        )
+
+    rule_icmp_flood = pd.Series(False, index=df_features.index)
+    if cfg.enable_icmp_flood_rule:
+        rule_icmp_flood = (
+            is_icmp
+            & (
+                (flow_packets_s >= cfg.icmp_packets_s_thr)
+                | (total_fwd_pkts >= cfg.icmp_total_fwd_pkts_thr)
+            )
+        )
+
+    rule_scan_like = pd.Series(False, index=df_features.index)
+    if cfg.enable_scan_like_rule:
+        rule_scan_like = (
+            is_tcp
+            & (syn >= 1)
+            & (ack <= 0)
+            & (flow_duration <= cfg.scan_duration_max)
+            & (total_pkts <= cfg.scan_total_pkts_max)
+            & (total_bytes <= cfg.scan_total_bytes_max)
+        )
+
+    details = pd.DataFrame(
+        {
+            "rule_high_rate": rule_high_rate.astype(int),
+            "rule_syn_flood": rule_syn_flood.astype(int),
+            "rule_udp_flood": rule_udp_flood.astype(int),
+            "rule_icmp_flood": rule_icmp_flood.astype(int),
+            "rule_scan_like": rule_scan_like.astype(int),
+        },
+        index=df_features.index,
+    )
+
+    y_pred = details.any(axis=1).astype(int).to_numpy()
+
+    if return_details:
+        return y_pred, details
+    return y_pred
+
+
+def predict(
+    df_features: pd.DataFrame,
+    config: SignatureConfig | None = None,
+    return_details: bool = False,
+) -> np.ndarray | Tuple[np.ndarray, pd.DataFrame]:
+    return detect(df_features, config=config, return_details=return_details)

@@ -1,171 +1,82 @@
 """
 main.py
 -------
-Main entry point for the NIDaaS research experiment repository.
+Central entry point for running NIDaaS experiments.
 
-This script is responsible for:
-1) Parsing command-line arguments
-2) Dispatching the selected experiment
-3) Passing runtime options such as dataset path, smoke mode, and profile
-
-Supported experiment groups
----------------------------
-1. detection
-   Compare detection performance between:
-   - Signature-only baseline
-   - Classical ML baselines
-   - Proposed Hybrid model (Signature + LSTM)
-
-2. efficiency
-   Compare deduplication efficiency between:
-   - No dedup
-   - Exact cache / traditional baseline
-   - Proposed Bloom + Exact dedup approach
-
-3. parallel
-   Compare scalability between:
-   - Centralized processing
-   - Partitioned / multi-worker processing
-
-4. all
-   Run all experiment groups in sequence
-
-Usage
------
-# Run detection experiment with real dataset
-python src/main.py --experiment detection --data data/
-
-# Run detection experiment with quick profile
-python src/main.py --experiment detection --data data/ --profile fast
-
-# Run detection experiment with full profile
-python src/main.py --experiment detection --data data/ --profile full
-
-# Run detection experiment in smoke mode (synthetic data, quick setup test)
-python src/main.py --experiment detection --smoke
-
-# Run efficiency experiment with real dataset
-python src/main.py --experiment efficiency --data data/
-
-# Run efficiency experiment in smoke mode
-python src/main.py --experiment efficiency --smoke
-
-# Run parallel experiment
-python src/main.py --experiment parallel --data data/
-
-# Run all experiments in smoke mode
-python src/main.py --experiment all --smoke
-
-Notes
------
-- Use --smoke when you want to verify that the pipeline runs correctly
-  without requiring the full dataset.
-- Use --profile fast for quicker CPU-friendly runs.
-- Use --profile full for more complete final evaluation.
-- Dataset paths are usually given relative to the project root, e.g. data/
+Supported experiments:
+- rf_novelty
+- rf_novelty_best
 """
 
-import sys
-import os
 import argparse
+import os
+import sys
 
-# --- OPENMP CONFLICT FIX ---
-# XGBoost (via libomp) and PyTorch can sometimes conflict on macOS, 
-# leading to deadlocks or "Error #15". This flag resolves it.
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1"     # Prevents thread-pool deadlock
-# ---------------------------
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+if CURRENT_DIR not in sys.path:
+    sys.path.insert(0, CURRENT_DIR)
 
-# Ensure src/ is on the path regardless of where the script is invoked from
-SRC_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, SRC_DIR)
-
-from experiment_detection import run_detection_experiment
-from experiment_efficiency import run_efficiency_experiment
-from experiment_parallel_dedupe import run_parallel_experiment
+from exp_rf_novelty import run_rf_novelty_experiment
+from best_config import get_best_experiment_config
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description=(
-            "NIDaaS Research Experiment Runner\n"
-            "-----------------------------------\n"
-            "Experiment 1 (detection):  compare Hybrid vs RF / XGBoost / LR\n"
-            "Experiment 2 (efficiency): compare Bloom+Exact dedup vs baselines\n"
-            "Experiment 3 (parallel):   compare Centralized vs Partitioned Multi-worker architecture\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+    parser = argparse.ArgumentParser(description="NIDaaS experiment runner")
+    subparsers = parser.add_subparsers(dest="experiment", required=True)
+
+    # Manual config
+    rf_parser = subparsers.add_parser(
+        "rf_novelty",
+        help="Run Random-Forest novelty experiment with manual parameters",
     )
-    parser.add_argument(
-        "--experiment",
-        choices=["detection", "1", "d", "efficiency", "2", "e", "parallel", "3", "p", "all"],
-        default="all",
-        help="Which experiment to run (default: all)",
+    rf_parser.add_argument("--input-dir", type=str, required=True, help="Directory or CSV path for CIC-IDS2017.")
+    rf_parser.add_argument("--max-rows-per-file", type=int, default=None, help="Optional row cap per CSV after loading.")
+    rf_parser.add_argument("--max-files", type=int, default=None, help="Optional cap on number of source CSV files.")
+    rf_parser.add_argument("--use-signature", action="store_true", help="Run signature-first hybrid experiment.")
+    rf_parser.add_argument("--n-estimators", type=int, default=100)
+    rf_parser.add_argument("--max-depth", type=int, default=10)
+    rf_parser.add_argument("--min-samples-leaf", type=int, default=5)
+    rf_parser.add_argument("--alpha", type=float, default=0.7)
+    rf_parser.add_argument("--quantiles", nargs="*", type=float, default=[0.95])
+    rf_parser.add_argument("--random-state", type=int, default=42)
+    rf_parser.add_argument("--result-dir", type=str, default="result", help="Directory to store experiment outputs.")
+
+    # Saved best config
+    best_parser = subparsers.add_parser(
+        "rf_novelty_best",
+        help="Run Random-Forest novelty experiment using saved best config",
     )
-    parser.add_argument(
-        "--data",
-        default="data/",
-        help="Path to CIC-IDS2017 CSV file or directory (default: data/)",
-    )
-    parser.add_argument(
-        "--smoke",
-        action="store_true",
-        help="Run with synthetic data — no real dataset required. Good for testing setup.",
-    )
-    parser.add_argument(
-        "--n-records",
-        type=int,
-        default=10_000,
-        help="Number of records to use in the efficiency experiment (default: 10000)",
-    )
-    parser.add_argument(
-        "--dup-rate",
-        type=float,
-        default=0.3,
-        help="Fraction of duplicate records to inject in the efficiency experiment (default: 0.3)",
-    )
-    parser.add_argument(
-        "--partitions",
-        type=int,
-        default=4,
-        help="Number of multi-processing partitions for Experiment 3 (default: 4)",
-    )
-    parser.add_argument(
-    "--profile",
-    choices=["fast", "full"],
-    default="fast",
-    help="Experiment profile: fast for quick CPU runs, full for final evaluation",
-)
+    best_parser.add_argument("--input-dir", type=str, required=True, help="Directory or CSV path for CIC-IDS2017.")
+    best_parser.add_argument("--max-rows-per-file", type=int, default=None, help="Optional row cap per CSV after loading.")
+    best_parser.add_argument("--max-files", type=int, default=8, help="Optional cap on number of source CSV files.")
+    best_parser.add_argument("--random-state", type=int, default=42)
+    best_parser.add_argument("--result-dir", type=str, default="result_best", help="Directory to store experiment outputs.")
 
     args = parser.parse_args()
 
-    if args.experiment in ("detection", "1", "d", "all"):
-        run_detection_experiment(
-        data_path=args.data,
-        smoke=args.smoke,
-        profile=args.profile,
-    )
+    if args.experiment == "rf_novelty":
+        run_rf_novelty_experiment(args)
 
-    if args.experiment in ("efficiency", "2", "e", "all"):
-        run_efficiency_experiment(
-            data_path=args.data,
-            smoke=args.smoke,
-            n_records=args.n_records,
-            dup_rate=args.dup_rate,
-        )
+    elif args.experiment == "rf_novelty_best":
+        best_cfg = get_best_experiment_config()
+        rf_cfg = best_cfg["rf_config"]
 
-    if args.experiment in ("parallel", "3", "p", "all"):
-        # Smoke testing for parallel uses small n_records
-        n_rec = 1000 if args.smoke else args.n_records
-        run_parallel_experiment(
-            data_path=args.data,
-            n_records=n_rec,
-            dup_rate=args.dup_rate,
-            num_partitions=args.partitions
-        )
+        args.use_signature = best_cfg.get("use_signature", True)
+        args.n_estimators = rf_cfg["n_estimators"]
+        args.max_depth = rf_cfg["max_depth"]
+        args.min_samples_leaf = rf_cfg["min_samples_leaf"]
+        args.alpha = rf_cfg["alpha"]
+        args.quantiles = rf_cfg["quantiles"]
+        args.random_state = args.random_state if args.random_state is not None else rf_cfg.get("random_state", 42)
 
-    print("\n✓ All requested experiments finished.")
-    print("  Check results/tables/ for CSVs and results/figures/ for plots.")
+        print("\nUsing saved best config:")
+        print(best_cfg["rf_config"])
+        print(best_cfg["signature_config"])
+
+        run_rf_novelty_experiment(args)
+
+    else:
+        raise ValueError(f"Unsupported experiment: {args.experiment}")
 
 
 if __name__ == "__main__":
