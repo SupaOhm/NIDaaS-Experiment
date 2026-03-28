@@ -1,0 +1,7 @@
+model,precision,recall,f1,far
+RF Novelty-only,0.9119,0.2804,0.4289,0.0504
+Hybrid Signature + RF Novelty,0.9117,0.2810,0.4295,0.0506
+Logistic Regression,0.9833,0.6539,0.7855,0.0041
+Decision Tree,0.9976,0.9948,0.9962,0.00089
+Random Forest,0.9988,0.9798,0.9892,0.00045
+Two-Stage LR → RF,0.9988,0.9684,0.9833,0.00045
