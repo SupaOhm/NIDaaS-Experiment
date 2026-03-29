@@ -309,7 +309,7 @@ class GridSearchOrchestrator:
 # ==============================================================================
 from data.loader import load_dataset
 
-def run_dedupe_grid_search(data_path: str, smoke_limit: int = None):
+def run_dedupe_grid_search(data_path: str, smoke_limit: int = None, duplicate_ratio: float | None = None):
     print("\n" + "="*80)
     print(" SYSTEMATIC GRID SEARCH: REAL WORLD CIC-IDS2017 EVALUATION ")
     print("="*80)
@@ -335,6 +335,21 @@ def run_dedupe_grid_search(data_path: str, smoke_limit: int = None):
     workloads = {
         f"Dataset ({dataset_name})": main_records
     }
+
+    if duplicate_ratio is not None:
+        if duplicate_ratio < 0.0 or duplicate_ratio > 1.0:
+            raise ValueError("[exp_search] duplicate_ratio must be in [0.0, 1.0]. Example: -d 0.5")
+
+        synth_size = smoke_limit if smoke_limit is not None else len(main_records)
+        synth_records = generate_synthetic_workload(
+            num_records=synth_size,
+            dup_ratio=duplicate_ratio,
+            bursty=False,
+            tenants=10,
+        )
+        workloads = {
+            f"Synthetic (dup={duplicate_ratio:.2f})": synth_records
+        }
 
     # Baseline: Monolithic Exact Hashmap (Dictionary)
     base_config_exact = {

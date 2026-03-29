@@ -18,36 +18,37 @@ def main():
     parser = argparse.ArgumentParser(
         description="NIDSaaS Research Evaluation Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Available Experiments:\n"
-            "  1 / detection   : Evaluates Snort, LSTM, and Hybrid Precision & F1\n"
-            "  2 / efficiency  : Benchmarks fair Sliding-Window deduplication topologies\n"
-            "  3 / scaling     : Evaluates Sensitivity to Window Size and Parallel CPU counts\n"
-            "  4 / search      : Systematic Grid Search across Parameterized 2-Stage Architectures\n"
-        )
-    )
-    parser.add_argument(
-        "--experiment", "-e",
-        choices=["1", "detection", "2", "efficiency", "3", "scaling", "4", "search", "all"],
-        default="all",
-        help="Target experiment variant (default: all)"
-    )
-    parser.add_argument("--data", "-d", default="data/", help="Path to CIC-IDS2017 .csv files")
-    parser.add_argument("--records", "-n", type=int, default=None, help="Limit number of records to process (default: all)")
+        epilog="""Examples:
+  python src/main.py -e 1 --data data/        # Detection Precision (full dataset)
+  python src/main.py -e 2 --data data/ -n 100000   # Dedupe Efficiency (100K records)
+  python src/main.py -e 3 --data data/        # Scaling Sensitivity
+""")
+    
+    parser.add_argument("-e", "--experiment", type=int, choices=[1, 2, 3, 4], required=True,
+                        help="Experiment: 1=Detection, 2=Dedup-Efficiency, 3=Scaling, 4=GridSearch")
+    parser.add_argument("--data", type=str, default="data/",
+                        help="Path to data directory with ISCX CSVs")
+    parser.add_argument("-n", "--records", type=int, default=None,
+                        help="Limit to N records (None = full dataset)")
+    parser.add_argument("-d", "--duplicate", type=float, default=None,
+                        help="Duplicate pressure ratio (0.0-1.0). For Experiment 2, appends sampled duplicate rows; for Experiment 4, controls synthetic dup ratio.")
     
     args = parser.parse_args()
     
-    if args.experiment in ("1", "detection", "all"):
-        run_detection_experiment(args.data, args.records)
-        
-    if args.experiment in ("2", "efficiency", "all"):
-        run_efficiency_experiment(args.data, args.records)
-        
-    if args.experiment in ("3", "scaling", "all"):
+    print(f"\n{'='*70}")
+    if args.experiment == 1:
+        print(" EXPERIMENT 1: DETECTION PRECISION ")
+        run_detection_experiment(args.data)
+    elif args.experiment == 2:
+        print(" EXPERIMENT 2: RAW CLEANED-EVENT DEDUPE EFFICIENCY & MEMORY BOUNDS ")
+        run_efficiency_experiment(args.data, args.records, duplicate_ratio=args.duplicate)
+    elif args.experiment == 3:
+        print(" EXPERIMENT 3: PIPELINE SCALABILITY SENSITIVITY ")
         run_scaling_experiment(args.data, args.records)
-        
-    if args.experiment in ("4", "search", "all"):
-        run_dedupe_grid_search(args.data, args.records)
-        
+    elif args.experiment == 4:
+        print(" EXPERIMENT 4: DEDUPE GRID SEARCH ")
+        run_dedupe_grid_search(args.data, args.records, duplicate_ratio=args.duplicate)
+    print(f"{'='*70}\n")
+
 if __name__ == "__main__":
     main()

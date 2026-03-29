@@ -8,17 +8,13 @@ and operations perform completely in parallel.
 """
 
 import time
-import hashlib
 import multiprocessing
 from typing import Dict, List, Any
 
 from dedupe.bloom_exact import BloomExactDeduplicator
 
-def parallel_worker(worker_id: int, records: List[dict], window_size: int, error_rate: float) -> Dict[str, Any]:
-    import gc
-    gc.collect()
-
-    deduper = BloomExactDeduplicator(window_size=window_size, error_rate=error_rate)
+def parallel_worker(worker_id: int, records: List[dict], window_size: int, error_rate: float, initial_capacity: int = 1000) -> Dict[str, Any]:
+    deduper = BloomExactDeduplicator(window_size=window_size, error_rate=error_rate, initial_capacity=initial_capacity)
     
     t0 = time.perf_counter()
     for r in records:
@@ -29,37 +25,40 @@ def parallel_worker(worker_id: int, records: List[dict], window_size: int, error
     stats["worker_id"] = worker_id
     stats["elapsed_s"] = elapsed_s
     
-    del deduper, records
-    gc.collect()
-    
     return stats
 
 
 class PartitionedDeduplicatorRunner:
     """Orchestrator for offline multiprocessing benchmark."""
-    def __init__(self, num_partitions=4, window_size=100_000, error_rate=0.01):
+    def __init__(self, num_partitions=4, window_size=100_000, error_rate=0.01, initial_capacity=1000):
         self.num_partitions = num_partitions
         self.window_size = window_size
         self.error_rate = error_rate
+        self.initial_capacity = initial_capacity
+        self._mp_ctx = multiprocessing.get_context("fork") if "fork" in multiprocessing.get_all_start_methods() else multiprocessing.get_context()
         
-    def partition_data(self, records: List[dict]) -> Dict[int, List[dict]]:
-        partitions = {i: [] for i in range(self.num_partitions)}
+    def partition_data(self, records: List[dict | tuple]) -> Dict[int, List[dict | tuple]]:
+        partitions = [[] for _ in range(self.num_partitions)]
+        n = self.num_partitions
         for r in records:
-            tid = str(r.get("Source IP", "default_tenant"))
-            hash_val = int(hashlib.md5(tid.encode('utf-8')).hexdigest(), 16)
-            pid = hash_val % self.num_partitions
+            if isinstance(r, tuple) and len(r) == 2:
+                tid = r[0][0]
+            else:
+                tid = str(r.get("Source IP", "default_tenant"))
+            # Use native hash for fast, in-run stable partition assignment.
+            pid = hash(tid) % n
             partitions[pid].append(r)
-        return partitions
+        return {i: partitions[i] for i in range(n)}
 
     def run_parallel(self, records: List[dict]) -> Dict[str, Any]:
         partitions = self.partition_data(records)
         
         args_list = []
         for pid in range(self.num_partitions):
-             args_list.append((pid, partitions[pid], self.window_size, self.error_rate))
+             args_list.append((pid, partitions[pid], self.window_size, self.error_rate, self.initial_capacity))
              
         t_start = time.perf_counter()
-        with multiprocessing.Pool(processes=self.num_partitions) as pool:
+        with self._mp_ctx.Pool(processes=self.num_partitions) as pool:
              results = pool.starmap(parallel_worker, args_list)
         t_end = time.perf_counter()
         
